@@ -1,0 +1,8 @@
+*.bin
+build/
+.pio/
+.vscode/
+builder_config.json
+cloud_builder.py
+linux_builder_config.json
+linux_cloud_builder.py

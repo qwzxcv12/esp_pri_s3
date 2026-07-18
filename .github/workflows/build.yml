@@ -1,0 +1,55 @@
+name: Build ESP32 Firmware
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:release-v5.1
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Reconstruct ESP-IDF Project Structure
+        run: |
+          # Create ESP-IDF standard directories
+          mkdir -p project/main
+          mkdir -p project/components
+
+          # Copy main application files
+          cp pri_NOW.cpp project/main/main.cpp
+          cp *.h project/main/ || true
+          cp idf_component.yml project/main/
+          cp CMakeLists_main.txt project/main/CMakeLists.txt
+          cp sdkconfig.defaults project/
+          cp partitions.csv project/ || true
+
+          # Create root CMakeLists.txt
+          printf 'cmake_minimum_required(VERSION 3.16)\nadd_compile_definitions("esp_wifi_set_band_mode=(int)" "WIFI_BAND_MODE_2G_ONLY=0")\ninclude($ENV{IDF_PATH}/tools/cmake/project.cmake)\nproject(pri_NOW)\n' > project/CMakeLists.txt
+
+          # (LED libraries removed)
+
+          # 6. Arduino Core
+          git clone --depth 1 -b release/v3.0.x https://github.com/espressif/arduino-esp32.git project/components/arduino
+
+      - name: Build Firmware
+        shell: bash
+        run: |
+          . $IDF_PATH/export.sh
+          cd project
+          idf.py set-target esp32s3
+          idf.py build
+
+      - name: Upload Firmware Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-firmware
+          path: |
+            project/build/bootloader/bootloader.bin
+            project/build/partition_table/partition-table.bin
+            project/build/*.bin
