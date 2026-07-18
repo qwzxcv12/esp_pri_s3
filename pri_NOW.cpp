@@ -1233,14 +1233,6 @@ extern "C" void app_main(void)
     char ssid[64] = {0};
     char password[64] = {0};
     esp_err_t err = read_wifi_credentials(ssid, sizeof(ssid), password, sizeof(password));
-    
-    // --- FIX HARDCODE WIFI CHO ESP32-S3 TEST ---
-    if (strlen(ssid) == 0) {
-        strcpy(ssid, "HG156");
-        strcpy(password, "hg123456!");
-        err = ESP_OK;
-    }
-    // -------------------------------------------
 
     char mqtt_server[64] = {0};
     char mqtt_port[16] = {0};
@@ -1315,13 +1307,11 @@ extern "C" void app_main(void)
 
         wifi_config_t wifi_config = {};
         const char* ap_ssid = "ESP32_WiFi_Config";
-        const char* ap_pass = "12345678";
         strncpy((char*)wifi_config.ap.ssid, ap_ssid, sizeof(wifi_config.ap.ssid));
-        strncpy((char*)wifi_config.ap.password, ap_pass, sizeof(wifi_config.ap.password));
         wifi_config.ap.ssid_len = strlen(ap_ssid);
         wifi_config.ap.channel = 6;
         wifi_config.ap.max_connection = 4;
-        wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
 
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
