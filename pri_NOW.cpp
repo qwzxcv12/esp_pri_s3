@@ -22,7 +22,8 @@
 #include "esp_https_ota.h"
 #include "esp_crt_bundle.h"
 #include "thermal_printer.h"
-#include "dns_server.h"
+#include <WiFi.h>
+#include <DNSServer.h>
 
 ThermalPrinter g_printer(UART_NUM_2);
 char g_unit_name[128] = "HE THONG XEP HANG";
@@ -43,6 +44,16 @@ void init_thermal_printer() {
 }
 static const char *TAG = "wifi_manager";
 static bool g_ap_mode = false; // true khi đang chạy ở chế độ AP/captive portal
+
+DNSServer dnsServer;
+
+static void dns_task(void *pvParameters)
+{
+    while (1) {
+        dnsServer.processNextRequest();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
 
 
 
@@ -223,24 +234,8 @@ static void event_handler(void* arg, esp_event_base_t event_base,
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         add_device_log("Connecting to AP...");
-        esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_wifi_event_group != NULL) {
-            // Boot phase: limited retries
-            if (s_retry_num < MAXIMUM_RETRY) {
-                esp_wifi_connect();
-                s_retry_num++;
-                add_device_log("Retry connection to AP (%d/%d)", s_retry_num, MAXIMUM_RETRY);
-            } else {
-                add_device_log("WiFi connection failed after max retries.");
-                xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-            }
-        } else {
-            // Runtime phase: infinite retries
-            add_device_log("WiFi lost during runtime. Retrying in 5s...");
-            vTaskDelay(pdMS_TO_TICKS(5000));
-            esp_wifi_connect();
-        }
+        add_device_log("WiFi disconnected.");
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
         wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
         add_device_log("Station " MACSTR " joined, AID=%d", MAC2STR(event->mac), event->aid);
@@ -253,7 +248,9 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&event->ip_info.ip));
         add_device_log("Successfully got IP: %s", ip_str);
         s_retry_num = 0;
-        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        if (s_wifi_event_group != NULL) {
+            xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_AP_STAIPASSIGNED) {
         ip_event_ap_staipassigned_t* event = (ip_event_ap_staipassigned_t*) event_data;
         char ip_str[32];
@@ -1236,14 +1233,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    // Create netif instances
-    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
-    esp_netif_t *ap_netif = esp_netif_create_default_wifi_ap();
-    (void)sta_netif;
-    (void)ap_netif;
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    // WiFi initialization will be handled by the Arduino WiFi library automatically
 
     // Register Event Handler
     esp_event_handler_instance_t instance_any_id;
@@ -1299,33 +1289,28 @@ extern "C" void app_main(void)
     if (err == ESP_OK && strlen(ssid) > 0) {
         add_device_log("Found stored WiFi credentials: SSID='%s'", ssid);
         
-        s_wifi_event_group = xEventGroupCreate();
-        s_retry_num = 0;
-
-        wifi_config_t wifi_config = {};
-        strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
-        strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
-
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-        ESP_ERROR_CHECK(esp_wifi_start());
+        WiFi.persistent(false);
+        WiFi.disconnect(true);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(false); // Equivalent to WIFI_NONE_SLEEP
+        WiFi.begin(ssid, password);
 
         add_device_log("Waiting for WiFi connection...");
-        EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                pdFALSE,
-                pdFALSE,
-                portMAX_DELAY);
-
-        if (bits & WIFI_CONNECTED_BIT) {
-            add_device_log("Successfully connected to WiFi SSID: %s", ssid);
-            connected = true;
-        } else if (bits & WIFI_FAIL_BIT) {
-            add_device_log("Failed to connect to WiFi SSID: %s after %d retries.", ssid, MAXIMUM_RETRY);
+        int retries = 0;
+        while (WiFi.status() != WL_CONNECTED && retries < 15) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            retries++;
+            add_device_log("Retry connection to AP (%d/15)", retries);
         }
 
-        vEventGroupDelete(s_wifi_event_group);
-        s_wifi_event_group = NULL;
+        if (WiFi.status() == WL_CONNECTED) {
+            add_device_log("Successfully connected to WiFi SSID: %s", ssid);
+            add_device_log("Successfully got IP: %s", WiFi.localIP().toString().c_str());
+            connected = true;
+        } else {
+            add_device_log("Failed to connect to WiFi SSID: %s after timeout.", ssid);
+        }
     } else {
         add_device_log("No stored WiFi credentials found in NVS.");
     }
@@ -1334,42 +1319,31 @@ extern "C" void app_main(void)
         add_device_log("Starting Access Point and Captive Portal...");
         g_ap_mode = true;
 
-        esp_wifi_stop();
+        WiFi.disconnect(true);
+        vTaskDelay(pdMS_TO_TICKS(200));
+        WiFi.mode(WIFI_AP);
+        WiFi.setSleep(false); // Ensure maximum DHCP performance for AP
 
-        wifi_config_t wifi_config = {};
-        const char* ap_ssid = "ESP32_WiFi_Config";
-        const char* ap_pass = "12345678";
-        strncpy((char*)wifi_config.ap.ssid, ap_ssid, sizeof(wifi_config.ap.ssid));
-        strncpy((char*)wifi_config.ap.password, ap_pass, sizeof(wifi_config.ap.password));
-        wifi_config.ap.ssid_len = strlen(ap_ssid);
-        wifi_config.ap.channel = 6;
-        wifi_config.ap.max_connection = 4;
-        wifi_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+        // Setup static IP for SoftAP
+        IPAddress apIP(192, 168, 4, 1);
+        WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
 
-        // Explicitly set static IP for AP and restart DHCP
-        esp_netif_dhcps_stop(ap_netif);
-        esp_netif_ip_info_t ip_info;
-        memset(&ip_info, 0, sizeof(esp_netif_ip_info_t));
-        IP4_ADDR(&ip_info.ip, 192, 168, 4, 1);
-        IP4_ADDR(&ip_info.gw, 192, 168, 4, 1);
-        IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
-        esp_netif_set_ip_info(ap_netif, &ip_info);
-        esp_netif_dhcps_start(ap_netif);
+        // Start SoftAP
+        WiFi.softAP("ESP32_WiFi_Config", "12345678", 6, 0, 4);
+        vTaskDelay(pdMS_TO_TICKS(500)); // 500ms delay to make sure IP and DHCP are bound (similar to Tasmota)
 
-        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
-        ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-        ESP_ERROR_CHECK(esp_wifi_start());
-
-        add_device_log("AP Mode started. SSID: %s", ap_ssid);
+        add_device_log("AP Mode started. SSID: ESP32_WiFi_Config");
         add_device_log("Connect to AP and open http://192.168.4.1");
 
         start_webserver();
 
-        // Khởi động DNS server để mọi domain đều trỏ về 192.168.4.1
-        // -> trigger captive portal popup tự động trên điện thoại/laptop
-        uint32_t ap_ip;
-        IP4_ADDR((ip4_addr_t*)&ap_ip, 192, 168, 4, 1);
-        dns_server_start(ap_ip);
+        // Start Arduino DNSServer
+        dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+        dnsServer.start(53, "*", apIP);
+        
+        // Spin up FreeRTOS task to poll DNS server requests
+        xTaskCreate(dns_task, "dns_task", 4096, NULL, 5, NULL);
+        add_device_log("DNS Captive Portal started on port 53");
     } else {
         add_device_log("Starting Web Server in Station mode...");
         start_webserver();

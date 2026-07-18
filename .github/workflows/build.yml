@@ -23,7 +23,6 @@ jobs:
 
           # Copy main application files
           cp pri_NOW.cpp project/main/main.cpp
-          cp dns_server.c project/main/ || true
           cp *.h project/main/ || true
           cp idf_component.yml project/main/
           cp CMakeLists_main.txt project/main/CMakeLists.txt
