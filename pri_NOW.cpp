@@ -238,6 +238,12 @@ static void event_handler(void* arg, esp_event_base_t event_base,
             vTaskDelay(pdMS_TO_TICKS(5000));
             esp_wifi_connect();
         }
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STACONNECTED) {
+        wifi_event_ap_staconnected_t* event = (wifi_event_ap_staconnected_t*) event_data;
+        add_device_log("Station " MACSTR " joined, AID=%d", MAC2STR(event->mac), event->aid);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_AP_STADISCONNECTED) {
+        wifi_event_ap_stadisconnected_t* event = (wifi_event_ap_stadisconnected_t*) event_data;
+        add_device_log("Station " MACSTR " left, AID=%d", MAC2STR(event->mac), event->aid);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
         char ip_str[32];
@@ -245,6 +251,11 @@ static void event_handler(void* arg, esp_event_base_t event_base,
         add_device_log("Successfully got IP: %s", ip_str);
         s_retry_num = 0;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_AP_STAIPASSIGNED) {
+        ip_event_ap_staipassigned_t* event = (ip_event_ap_staipassigned_t*) event_data;
+        char ip_str[32];
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&event->ip_info.ip));
+        add_device_log("Assigned IP %s to client " MACSTR, ip_str, MAC2STR(event->mac));
     }
 }
 
@@ -1224,7 +1235,7 @@ extern "C" void app_main(void)
                                                         NULL,
                                                         &instance_any_id));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
-                                                        IP_EVENT_STA_GOT_IP,
+                                                        ESP_EVENT_ANY_ID,
                                                         &event_handler,
                                                         NULL,
                                                         &instance_got_ip));
@@ -1312,6 +1323,16 @@ extern "C" void app_main(void)
         wifi_config.ap.channel = 6;
         wifi_config.ap.max_connection = 4;
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
+
+        // Explicitly set static IP for AP and restart DHCP
+        esp_netif_dhcps_stop(ap_netif);
+        esp_netif_ip_info_t ip_info;
+        memset(&ip_info, 0, sizeof(esp_netif_ip_info_t));
+        IP4_ADDR(&ip_info.ip, 192, 168, 4, 1);
+        IP4_ADDR(&ip_info.gw, 192, 168, 4, 1);
+        IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
+        esp_netif_set_ip_info(ap_netif, &ip_info);
+        esp_netif_dhcps_start(ap_netif);
 
         ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
