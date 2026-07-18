@@ -22,6 +22,7 @@
 #include "esp_https_ota.h"
 #include "esp_crt_bundle.h"
 #include "thermal_printer.h"
+#include "dns_server.h"
 
 ThermalPrinter g_printer(UART_NUM_2);
 char g_unit_name[128] = "HE THONG XEP HANG";
@@ -41,6 +42,7 @@ void init_thermal_printer() {
     ESP_LOGI("PRINTER", "Thermal Printer UART initialized on TX=17, RX=18");
 }
 static const char *TAG = "wifi_manager";
+static bool g_ap_mode = false; // true khi đang chạy ở chế độ AP/captive portal
 
 
 
@@ -481,6 +483,21 @@ static esp_err_t send_log_template_chunked(httpd_req_t *req, const char* templat
         }
     }
     return httpd_resp_send_chunk(req, NULL, 0);
+}
+
+// Bắt mọi request tới URL không khớp handler nào (vd: connectivitycheck.gstatic.com,
+// captive.apple.com, hotspot-detect.html...) và redirect về trang cấu hình.
+// Đây là cơ chế trigger captive portal popup tự động trên điện thoại/laptop.
+static esp_err_t captive_portal_404_handler(httpd_req_t *req, httpd_err_code_t err)
+{
+    if (g_ap_mode) {
+        httpd_resp_set_status(req, "302 Found");
+        httpd_resp_set_hdr(req, "Location", "http://192.168.4.1/");
+        httpd_resp_send(req, NULL, 0);
+        return ESP_OK;
+    }
+    httpd_resp_send_404(req);
+    return ESP_OK;
 }
 
 static esp_err_t root_get_handler(httpd_req_t *req)
@@ -1059,6 +1076,7 @@ static httpd_handle_t start_webserver(void)
             .user_ctx  = NULL
         };
         httpd_register_uri_handler(server, &root);
+        httpd_register_err_handler(server, HTTPD_404_NOT_FOUND, captive_portal_404_handler);
 
         httpd_uri_t login_get = {
             .uri       = "/login",
@@ -1314,7 +1332,8 @@ extern "C" void app_main(void)
 
     if (!connected) {
         add_device_log("Starting Access Point and Captive Portal...");
-        
+        g_ap_mode = true;
+
         esp_wifi_stop();
 
         wifi_config_t wifi_config = {};
@@ -1345,6 +1364,12 @@ extern "C" void app_main(void)
         add_device_log("Connect to AP and open http://192.168.4.1");
 
         start_webserver();
+
+        // Khởi động DNS server để mọi domain đều trỏ về 192.168.4.1
+        // -> trigger captive portal popup tự động trên điện thoại/laptop
+        uint32_t ap_ip;
+        IP4_ADDR((ip4_addr_t*)&ap_ip, 192, 168, 4, 1);
+        dns_server_start(ap_ip);
     } else {
         add_device_log("Starting Web Server in Station mode...");
         start_webserver();
