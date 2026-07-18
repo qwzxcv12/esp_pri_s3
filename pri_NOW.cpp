@@ -255,7 +255,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_AP_STAIPASSIGNED) {
         ip_event_ap_staipassigned_t* event = (ip_event_ap_staipassigned_t*) event_data;
         char ip_str[32];
-        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&event->ip_info.ip));
+        snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&event->ip));
         add_device_log("Assigned IP %s to client " MACSTR, ip_str, MAC2STR(event->mac));
     }
 }
